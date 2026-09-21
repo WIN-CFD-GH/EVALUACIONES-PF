@@ -1,0 +1,22 @@
+[
+  {
+    "nombres": "jhonny ",
+    "apellidos": "león",
+    "dni": "45252468",
+    "campana": "ATC",
+    "evaluacion": "Modular 1",
+    "nota": 6,
+    "total": 20,
+    "Fecha": "2026-08-26 16:06:30"
+  },
+  {
+    "nombres": "JHONNY EDUAR",
+    "apellidos": "LEÓN ILLESCAS",
+    "dni": "45627487",
+    "campana": "RETENCIONES",
+    "evaluacion": "Modular 2",
+    "nota": 10,
+    "total": 20,
+    "Fecha": "2026-08-26 16:11:08"
+  }
+]
