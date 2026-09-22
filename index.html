@@ -2867,6 +2867,24 @@
             } catch (e) {}
         }
 
+        function isTechnicalTestRecord(r) {
+            if (!r) return true;
+            const nombre = `${r.nombre || ''} ${r.apellidos || ''}`.trim().toUpperCase();
+            const campana = `${r.campana || ''}`.trim().toUpperCase();
+            const dni = `${r.dni || ''}`.trim();
+            
+            // Nunca filtrar a asesores reales
+            // Jhonny Leon Illescas test cleaned
+            if (nombre.includes('FARFAN') || nombre.includes('CAJAHUARINGA') || nombre.includes('FERNANDEZ') || nombre.includes('NOLAZCO') || nombre.includes('RUIZ') || nombre.includes('REYNOSO')) {
+                return false;
+            }
+
+            if (!nombre || nombre.includes('PRUEBA') || nombre.includes('TEST') || nombre.includes('DEMO')) return true;
+            if (campana.includes('PRUEBA') || campana.includes('TEST') || campana.includes('DEMO')) return true;
+            if (['12345678', '77889900', '99999999', '46565454', '56374839'].includes(dni)) return true;
+            return false;
+        }
+
         async function fetchAllEvaluationsCentralized() {
             let cloudRecords = [];
             let isCloudSuccess = false;
@@ -2899,27 +2917,23 @@
                 updateCloudSyncBadge('offline', 'Almacenamiento Local');
             }
 
-            // Si se conectó a Firebase, la nube es la fuente principal de verdad
+            // Filtrar registros de prueba tanto de Firebase como del almacenamiento local
+            cloudRecords = cloudRecords.filter(r => !isTechnicalTestRecord(r));
+
             const recordMap = new Map();
 
             if (isCloudSuccess) {
-                // Firebase es la fuente primaria
+                // Firebase es la fuente primaria exclusiva
                 cloudRecords.forEach(r => { if (r && (r.id || r._firebaseKey)) recordMap.set(r.id || r._firebaseKey, r); });
-                // Respaldo local si existía alguno no sincronizado
-                const localRecords = getLocalStoredEvaluations();
-                localRecords.forEach(r => {
-                    if (r && r.id && !recordMap.has(r.id)) {
-                        recordMap.set(r.id, r);
-                    }
-                });
             } else {
-                const localRecords = getLocalStoredEvaluations();
+                const localRecords = getLocalStoredEvaluations().filter(r => !isTechnicalTestRecord(r));
                 localRecords.forEach(r => { if (r && r.id) recordMap.set(r.id, r); });
             }
 
             const unifiedList = Array.from(recordMap.values());
             unifiedList.sort((a, b) => new Date(b.fechaInicioRaw || b.fechaInicio || 0) - new Date(a.fechaInicioRaw || a.fechaInicio || 0));
 
+            // Guardar solo registros limpios en caché local
             setLocalStoredEvaluations(unifiedList);
             cachedEvaluations = unifiedList;
             return { records: unifiedList, fromCloud: isCloudSuccess, totalCount: unifiedList.length };
@@ -3616,9 +3630,14 @@
                         </span>
                     </td>
                     <td>
-                        <button class="btn-ghost" onclick="viewDetailedAnswers('${r.id}')" style="padding: 0.35rem 0.65rem; font-size: 0.8rem;">
-                            👁️ Ver Respuestas
-                        </button>
+                        <div style="display: flex; gap: 6px; align-items: center; justify-content: flex-end;">
+                            <button class="btn-ghost" onclick="viewDetailedAnswers('${r.id}')" style="padding: 0.35rem 0.6rem; font-size: 0.8rem;" title="Ver desglose de respuestas">
+                                👁️ Ver
+                            </button>
+                            <button class="btn-ghost" onclick="deleteEvaluationAttempt('${r.id}', '${r._firebaseKey || ''}')" style="padding: 0.35rem 0.55rem; font-size: 0.8rem; color: #ef4444; border-color: rgba(239, 68, 68, 0.35);" title="Eliminar este intento de evaluación">
+                                🗑️
+                            </button>
+                        </div>
                     </td>
                 `;
                 tbody.appendChild(tr);
