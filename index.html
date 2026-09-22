@@ -983,6 +983,22 @@
                 padding: 1.2rem;
             }
         }
+    
+        @keyframes spin { 100% { transform: rotate(360deg); } }
+        .rotating { display: inline-block; animation: spin 0.9s linear infinite; }
+        .cloud-badge {
+            font-size: 0.85rem;
+            color: var(--color-text-muted);
+            font-weight: 500;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.4rem;
+            padding: 0.45rem 0.85rem;
+            background: #edf2f7;
+            border-radius: var(--radius-sm);
+            border: 1px solid var(--color-border);
+        }
+    
     </style>
 </head>
 <body>
@@ -1162,7 +1178,10 @@
                             Métricas generales y registro detallado de intentos de evaluación.
                         </p>
                     </div>
-                    <div style="display: flex; gap: 0.65rem; flex-wrap: wrap;">
+                    <div style="display: flex; gap: 0.65rem; flex-wrap: wrap; align-items: center;">
+                        <button id="btn-sync-cloud" class="btn-ghost" title="Sincronizar evaluaciones desde la nube central">
+                            <span id="sync-spinner">🔄</span> <span id="sync-label">Sincronizar Nube</span>
+                        </button>
                         <button id="btn-export-excel" class="btn-secondary">
                             <span>📥 EXPORTAR A EXCEL</span>
                         </button>
@@ -1232,6 +1251,9 @@
                         <option value="Modular 3">Modular 3</option>
                         <option value="Modular 4">Modular 4</option>
                     </select>
+                    <div id="cloud-sync-status" class="cloud-badge">
+                        <span id="cloud-status-dot">🟢</span> <span id="cloud-status-text">Conectado a la Nube Central</span>
+                    </div>
                 </div>
 
                 <div class="table-responsive">
@@ -2299,10 +2321,15 @@
 };
 
         // ==========================================
-        // 2. SEGURIDAD Y ESTADO DE LA APLICACIÓN
+        // 2. SEGURIDAD, CONFIGURACIÓN Y ESTADO
         // ==========================================
         const ADMIN_PASSWORD = "Jl30n1.P3ruF1br4.2027";
         const STORAGE_KEY = 'peru_fibra_evaluations_v2';
+
+        // URL de Base de Datos Centralizada (Firebase Realtime Database REST API)
+        // Permite lectura y persistencia permanente entre todos los dispositivos / GitHub Pages
+        const CLOUD_DB_URL = "https://perufibra-evaluaciones-default-rtdb.firebaseio.com/evaluaciones.json";
+
         let currentStudent = {};
         let currentQuestions = [];
         let userSelectedAnswers = {}; // questionIndex -> optionIndex
@@ -2313,15 +2340,19 @@
         let alertTriggered5 = false;
         let alertTriggered1 = false;
         let lastSubmissionResult = null;
+        let cachedEvaluations = []; // Cache en memoria para renderizado inmediato
 
         // ==========================================
-        // 3. FUNCIONES DE ALMACENAMIENTO
+        // 3. PERSISTENCIA Y SINCRONIZACIÓN CENTRALIZADA
         // ==========================================
-        function getStoredEvaluations() {
+        
+        // Obtener evaluaciones almacenadas localmente (Fallback / Cache)
+        function getLocalStoredEvaluations() {
             try {
                 const raw = localStorage.getItem(STORAGE_KEY);
                 if (raw) {
-                    return JSON.parse(raw);
+                    const parsed = JSON.parse(raw);
+                    if (Array.isArray(parsed)) return parsed;
                 }
             } catch (e) {
                 console.error("Error reading localStorage:", e);
@@ -2329,16 +2360,116 @@
             return [];
         }
 
-        function saveEvaluationRecord(record) {
+        // Guardar evaluaciones en localStorage
+        function setLocalStoredEvaluations(records) {
             try {
-                const records = getStoredEvaluations();
-                records.unshift(record); // Añadir al inicio
                 localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
             } catch (e) {
-                console.error("Error saving to localStorage:", e);
+                console.error("Error writing localStorage:", e);
+            }
+        }
+
+        // Obtener todas las evaluaciones centralizadas (Nube Central + Local)
+        async function fetchAllEvaluationsCentralized() {
+            let localRecords = getLocalStoredEvaluations();
+            let cloudRecords = [];
+            let cloudSuccess = false;
+
+            try {
+                const response = await fetch(CLOUD_DB_URL, {
+                    method: 'GET',
+                    headers: { 'Accept': 'application/json' },
+                    cache: 'no-store'
+                });
+
+                if (response.ok) {
+                    const data = await response.json();
+                    if (data) {
+                        if (Array.isArray(data)) {
+                            cloudRecords = data.filter(Boolean);
+                        } else if (typeof data === 'object') {
+                            // Firebase almacena colecciones con hash keys: { "-Nxy...": { ... } }
+                            cloudRecords = Object.keys(data).map(k => ({
+                                ...data[k],
+                                _cloudKey: k
+                            }));
+                        }
+                        cloudSuccess = true;
+                    }
+                }
+            } catch (err) {
+                console.warn("Aviso: Sincronización en la nube temporalmente en modo offline/cache:", err);
             }
 
-            // Compatibilidad opcional con backend si existe
+            // Unificar registros por ID único evitando duplicaciones
+            const recordMap = new Map();
+
+            // 1. Añadir locales primero
+            localRecords.forEach(r => {
+                if (r && r.id) recordMap.set(r.id, r);
+            });
+
+            // 2. Sobrescribir / Añadir registros de la nube central (fuente de verdad)
+            cloudRecords.forEach(r => {
+                if (r && r.id) recordMap.set(r.id, r);
+            });
+
+            // 3. Ordenar por fecha descendente (los más recientes primero)
+            const mergedRecords = Array.from(recordMap.values()).sort((a, b) => {
+                const tA = a.fechaInicioRaw ? new Date(a.fechaInicioRaw).getTime() : 0;
+                const tB = b.fechaInicioRaw ? new Date(b.fechaInicioRaw).getTime() : 0;
+                return tB - tA;
+            });
+
+            // Actualizar caché
+            setLocalStoredEvaluations(mergedRecords);
+            cachedEvaluations = mergedRecords;
+
+            return {
+                records: mergedRecords,
+                fromCloud: cloudSuccess,
+                cloudCount: cloudRecords.length,
+                totalCount: mergedRecords.length
+            };
+        }
+
+        // Guardar registro de evaluación (Localmente y en Nube Central)
+        async function saveEvaluationRecord(record) {
+            // 1. Guardar de inmediato en localStorage para evitar pérdida de datos offline
+            try {
+                const localRecords = getLocalStoredEvaluations();
+                const existingIdx = localRecords.findIndex(r => r.id === record.id);
+                if (existingIdx >= 0) {
+                    localRecords[existingIdx] = record;
+                } else {
+                    localRecords.unshift(record);
+                }
+                setLocalStoredEvaluations(localRecords);
+                cachedEvaluations = localRecords;
+            } catch (e) {
+                console.error("Error guardando copia local:", e);
+            }
+
+            // 2. Persistir permanentemente en la Base de Datos Centralizada (Firebase REST API)
+            try {
+                fetch(CLOUD_DB_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(record)
+                }).then(async res => {
+                    if (res.ok) {
+                        console.log("✅ Evaluación registrada permanentemente en la Base de Datos Central.");
+                    } else {
+                        console.warn("⚠️ Servidor central respondió con estado HTTP:", res.status);
+                    }
+                }).catch(err => {
+                    console.warn("⚠️ Error al conectar con la nube central (quedó en caché local):", err);
+                });
+            } catch (e) {
+                console.error("Error al enviar a la nube:", e);
+            }
+
+            // 3. Compatibilidad con backend local python (server.py) si está disponible
             try {
                 fetch('/api/save_grade', {
                     method: 'POST',
@@ -2394,9 +2525,12 @@
         }
 
         // ==========================================
-        // 5. INICIALIZACIÓN
+        // 5. INICIALIZACIÓN DE EVENTOS
         // ==========================================
         document.addEventListener('DOMContentLoaded', () => {
+            // Carga silenciosa inicial de registros en caché
+            cachedEvaluations = getLocalStoredEvaluations();
+
             // Manejador del formulario de inicio
             const formHome = document.getElementById('form-home');
             formHome.addEventListener('submit', (e) => {
@@ -2464,9 +2598,9 @@
                 const entered = adminPasswordInput.value;
                 if (entered === ADMIN_PASSWORD) {
                     closeAdminAuthModal();
-                    loadAdminDashboard();
                     showScreen('screen-admin');
-                    showToast("Acceso concedido al Panel de Administrador", "🔓");
+                    loadAdminDashboard();
+                    showToast("Acceso concedido al Dashboard Administrador", "🔓");
                 } else {
                     adminAuthError.style.display = 'block';
                     adminPasswordInput.value = '';
@@ -2477,6 +2611,14 @@
             document.getElementById('btn-admin-close').addEventListener('click', () => {
                 showScreen('screen-home');
             });
+
+            // Sincronización manual en el Dashboard
+            const btnSync = document.getElementById('btn-sync-cloud');
+            if (btnSync) {
+                btnSync.addEventListener('click', () => {
+                    loadAdminDashboard(true);
+                });
+            }
 
             // Exportación a Excel
             document.getElementById('btn-export-excel').addEventListener('click', () => {
@@ -2600,7 +2742,6 @@
 
                     radio.addEventListener('change', () => {
                         userSelectedAnswers[qIndex] = optIndex;
-                        // Actualizar clases de seleccion
                         optionsList.querySelectorAll('.option-label').forEach(l => l.classList.remove('selected'));
                         label.classList.add('selected');
                         updateAnswerProgress();
@@ -2690,7 +2831,7 @@
         }
 
         // ==========================================
-        // 9. ENVÍO Y CÁLCULO DE NOTA
+        // 9. ENVÍO, CÁLCULO DE NOTA Y ESTRUCTURACIÓN
         // ==========================================
         function submitEvaluation(force = false) {
             const total = currentQuestions.length;
@@ -2709,38 +2850,61 @@
             const endTime = new Date();
             const timeUsedSeconds = Math.max(1, Math.round((endTime - evaluationStartTime) / 1000));
 
-            // Calcular nota (1 punto por pregunta correcta)
+            // Calcular nota y estructurar las 20 respuestas
             let score = 0;
             const answersDetail = [];
+            const flatAnswers = {};
 
             currentQuestions.forEach((q, idx) => {
+                const qNum = idx + 1;
                 const markedIndex = userSelectedAnswers.hasOwnProperty(idx) ? userSelectedAnswers[idx] : -1;
-                const isCorrect = markedIndex === q.correctIndex;
+                const isCorrect = (markedIndex === q.correctIndex);
                 if (isCorrect) {
                     score++;
                 }
 
-                answersDetail.push({
+                let markedLetter = '--';
+                let markedText = 'Sin responder';
+                if (markedIndex >= 0 && q.options[markedIndex]) {
+                    markedLetter = String.fromCharCode(65 + markedIndex);
+                    markedText = q.options[markedIndex];
+                }
+
+                let correctLetter = String.fromCharCode(65 + q.correctIndex);
+                let correctText = q.options[q.correctIndex] || '--';
+
+                const answerObj = {
                     questionIndex: idx,
-                    questionNumber: idx + 1,
+                    questionNumber: qNum,
                     questionText: q.question,
                     options: q.options,
                     markedIndex: markedIndex,
-                    markedText: markedIndex >= 0 ? q.options[markedIndex] : 'Sin responder',
+                    markedLetter: markedLetter,
+                    markedText: markedText,
                     correctIndex: q.correctIndex,
-                    correctText: q.options[q.correctIndex],
+                    correctLetter: correctLetter,
+                    correctText: correctText,
                     isCorrect: isCorrect
-                });
+                };
+
+                answersDetail.push(answerObj);
+                
+                // Mapeo plano P1..P20 para exportación y compatibilidad inmediata
+                flatAnswers[`P${qNum}`] = markedText;
             });
 
             const percentage = Math.round((score / total) * 100);
-            const isApproved = score >= 14; // >= 70% en sistema vigesimal (14/20)
+            const isApproved = score >= 14; // >= 14/20
+
+            // Generador de ID único con marca de tiempo y aleatorio
+            const uniqueId = 'EVAL-' + Date.now() + '-' + Math.random().toString(36).substring(2, 7).toUpperCase();
 
             // Objeto de registro completo
             const record = {
-                id: 'EVAL-' + Date.now(),
+                id: uniqueId,
                 nombres: currentStudent.nombres,
                 apellidos: currentStudent.apellidos,
+                nombreCompleto: `${currentStudent.nombres} ${currentStudent.apellidos}`,
                 dni: currentStudent.dni,
                 codigo: currentStudent.codigo,
                 campana: currentStudent.campana,
@@ -2753,18 +2917,23 @@
                 tiempoSegundos: timeUsedSeconds,
                 puntaje: score,
                 total: total,
+                nota: `${score}/${total}`,
                 porcentaje: percentage,
                 aprobado: isApproved,
-                respuestas: answersDetail
+                estado: isApproved ? 'APROBADO' : 'DESAPROBADO',
+                respuestas: answersDetail,
+                p_respuestas: flatAnswers,
+                ...flatAnswers // Inyectar P1..P20 como propiedades planas
             };
 
-            // Guardar registro
+            // Guardar registro centralmente y en local
             saveEvaluationRecord(record);
             lastSubmissionResult = record;
 
             // Mostrar pantalla de resultados
             renderResultsScreen(record);
             showScreen('screen-results');
+            showToast("Evaluación enviada y guardada exitosamente.", "✅");
         }
 
         // ==========================================
@@ -2794,7 +2963,7 @@
             document.getElementById('participant-review-section').style.display = 'none';
         }
 
-        // Revisar respuestas del participante SIN revelar correctas ni incorrectas
+        // Revisar respuestas del participante SIN revelar respuestas correctas
         function renderParticipantReview() {
             if (!lastSubmissionResult) return;
             const container = document.getElementById('participant-review-list');
@@ -2811,11 +2980,7 @@
                 const marked = document.createElement('div');
                 marked.className = 'review-marked-badge';
                 
-                // Formatear letra y texto de la alternativa seleccionada
-                let letter = '--';
-                if (ans.markedIndex >= 0) {
-                    letter = String.fromCharCode(65 + ans.markedIndex);
-                }
+                let letter = ans.markedLetter || '--';
                 marked.innerHTML = `<strong>Respuesta marcada:</strong> ${letter}) ${ans.markedText}`;
 
                 item.appendChild(title);
@@ -2831,10 +2996,49 @@
         // ==========================================
         // 11. DASHBOARD ADMINISTRADOR
         // ==========================================
-        function loadAdminDashboard() {
-            const records = getStoredEvaluations();
-            calculateAndRenderKPIs(records);
-            renderAdminTable(records);
+        async function loadAdminDashboard(isManualSync = false) {
+            // 1. Mostrar de inmediato la caché en memoria / local para una UI instantánea
+            let currentList = cachedEvaluations.length > 0 ? cachedEvaluations : getLocalStoredEvaluations();
+            calculateAndRenderKPIs(currentList);
+            renderAdminTable(currentList);
+
+            // 2. Indicadores de sincronización
+            const statusText = document.getElementById('cloud-status-text');
+            const statusDot = document.getElementById('cloud-status-dot');
+            const syncSpinner = document.getElementById('sync-spinner');
+
+            if (statusText) statusText.textContent = "Sincronizando con la Base de Datos Central...";
+            if (statusDot) statusDot.textContent = "🟡";
+            if (syncSpinner) syncSpinner.classList.add('rotating');
+
+            try {
+                // 3. Traer datos unificados de la nube
+                const result = await fetchAllEvaluationsCentralized();
+                calculateAndRenderKPIs(result.records);
+                renderAdminTable(result.records);
+
+                if (statusText) {
+                    if (result.fromCloud) {
+                        statusText.textContent = `Nube Central Sincronizada (${result.totalCount} intentos)`;
+                        if (statusDot) statusDot.textContent = "🟢";
+                    } else {
+                        statusText.textContent = `Modo Local/Offline (${result.totalCount} intentos)`;
+                        if (statusDot) statusDot.textContent = "🟠";
+                    }
+                }
+
+                if (isManualSync) {
+                    showToast(`Sincronización completada: ${result.totalCount} evaluaciones registradas.`, "🔄");
+                }
+            } catch (err) {
+                console.error("Error al cargar dashboard:", err);
+                if (statusText) {
+                    statusText.textContent = `Registros en caché (${currentList.length} intentos)`;
+                    if (statusDot) statusDot.textContent = "🟠";
+                }
+            } finally {
+                if (syncSpinner) syncSpinner.classList.remove('rotating');
+            }
         }
 
         function calculateAndRenderKPIs(records) {
@@ -2853,13 +3057,14 @@
             };
 
             records.forEach(r => {
-                totalScore += r.puntaje;
+                const sc = Number(r.puntaje) || 0;
+                totalScore += sc;
                 if (r.aprobado) approvedCount++;
                 else failedCount++;
 
                 const modKey = r.evaluacion;
                 if (modScores[modKey]) {
-                    modScores[modKey].sum += r.puntaje;
+                    modScores[modKey].sum += sc;
                     modScores[modKey].count++;
                 }
             });
@@ -2891,10 +3096,10 @@
             const tbody = document.getElementById('admin-tbody');
             tbody.innerHTML = '';
 
-            if (records.length === 0) {
+            if (!records || records.length === 0) {
                 tbody.innerHTML = `
                     <tr>
-                        <td colspan="12" style="text-align: center; color: var(--color-text-muted); padding: 2rem;">
+                        <td colspan="12" style="text-align: center; color: var(--color-text-muted); padding: 2.5rem;">
                             No hay registros de evaluaciones guardadas aún.
                         </td>
                     </tr>
@@ -2907,19 +3112,19 @@
                 const scoreClass = r.aprobado ? 'score-pass' : 'score-fail';
 
                 tr.innerHTML = `
-                    <td><strong>${r.nombres}</strong></td>
-                    <td>${r.apellidos}</td>
-                    <td><code>${r.dni}</code></td>
-                    <td>${r.campana}</td>
-                    <td>${r.codigo}</td>
-                    <td><span style="font-weight: 600; color: var(--color-primary);">${r.evaluacion}</span></td>
-                    <td><small>${r.fechaInicio}</small></td>
-                    <td><small>${r.fechaFin}</small></td>
-                    <td>${r.tiempoUtilizado}</td>
-                    <td><span class="score-pill ${scoreClass}">${r.puntaje}/${r.total}</span></td>
-                    <td><strong>${r.porcentaje}%</strong></td>
+                    <td><strong>${r.nombres || ''}</strong></td>
+                    <td>${r.apellidos || ''}</td>
+                    <td><code>${r.dni || ''}</code></td>
+                    <td>${r.campana || ''}</td>
+                    <td>${r.codigo || ''}</td>
+                    <td><span style="font-weight: 600; color: var(--color-primary);">${r.evaluacion || ''}</span></td>
+                    <td><small>${r.fechaInicio || '--'}</small></td>
+                    <td><small>${r.fechaFin || '--'}</small></td>
+                    <td>${r.tiempoUtilizado || '--'}</td>
+                    <td><span class="score-pill ${scoreClass}">${r.puntaje !== undefined ? r.puntaje : 0}/${r.total || 20}</span></td>
+                    <td><strong>${r.porcentaje !== undefined ? r.porcentaje : 0}%</strong></td>
                     <td>
-                        <button class="btn-ghost btn-sm" onclick="openAuditModal('${r.id}')">
+                        <button class="btn-ghost btn-sm" onclick="openAuditModal('${r.id}')" title="Ver auditoría completa de respuestas">
                             🔍 Auditar
                         </button>
                     </td>
@@ -2931,10 +3136,10 @@
         function filterAdminTable() {
             const query = document.getElementById('admin-search-input').value.toLowerCase().trim();
             const modFilter = document.getElementById('admin-filter-mod').value;
-            const records = getStoredEvaluations();
+            const records = cachedEvaluations.length > 0 ? cachedEvaluations : getLocalStoredEvaluations();
 
             const filtered = records.filter(r => {
-                const matchMod = modFilter === 'ALL' || r.evaluacion === modFilter;
+                const matchMod = (modFilter === 'ALL' || r.evaluacion === modFilter);
                 const matchQuery = !query || 
                     (r.nombres && r.nombres.toLowerCase().includes(query)) ||
                     (r.apellidos && r.apellidos.toLowerCase().includes(query)) ||
@@ -2951,7 +3156,7 @@
         // 12. AUDITORÍA DEL INTENTO (ADMIN)
         // ==========================================
         window.openAuditModal = function(recordId) {
-            const records = getStoredEvaluations();
+            const records = cachedEvaluations.length > 0 ? cachedEvaluations : getLocalStoredEvaluations();
             const record = records.find(r => r.id === recordId);
             if (!record) {
                 alert("No se encontró el registro seleccionado.");
@@ -2964,12 +3169,20 @@
             const summaryDiv = document.getElementById('modal-audit-summary');
             summaryDiv.innerHTML = `
                 <div class="meta-item">
+                    <div class="meta-label">Participante</div>
+                    <div class="meta-value"><strong>${record.nombres} ${record.apellidos}</strong></div>
+                </div>
+                <div class="meta-item">
                     <div class="meta-label">DNI / Código</div>
                     <div class="meta-value">${record.dni} / ${record.codigo}</div>
                 </div>
                 <div class="meta-item">
                     <div class="meta-label">Campaña</div>
                     <div class="meta-value">${record.campana}</div>
+                </div>
+                <div class="meta-item">
+                    <div class="meta-label">Modular Rendido</div>
+                    <div class="meta-value" style="color: var(--color-primary); font-weight: 700;">${record.evaluacion}</div>
                 </div>
                 <div class="meta-item">
                     <div class="meta-label">Hora Inicio / Fin</div>
@@ -2980,9 +3193,12 @@
                     <div class="meta-value">${record.tiempoUtilizado}</div>
                 </div>
                 <div class="meta-item">
-                    <div class="meta-label">Nota Final / %</div>
+                    <div class="meta-label">Nota Final / Porcentaje</div>
                     <div class="meta-value" style="color: var(--color-primary); font-size: 1.1rem;">
-                        <strong>${record.puntaje}/${record.total} (${record.porcentaje}%)</strong>
+                        <strong>${record.puntaje}/${record.total || 20} (${record.porcentaje}%)</strong>
+                        <span class="score-pill ${record.aprobado ? 'score-pass' : 'score-fail'}" style="margin-left: 0.5rem; font-size: 0.75rem;">
+                            ${record.aprobado ? 'APROBADO' : 'DESAPROBADO'}
+                        </span>
                     </div>
                 </div>
             `;
@@ -2990,91 +3206,146 @@
             const qContainer = document.getElementById('modal-audit-questions');
             qContainer.innerHTML = '';
 
-            record.respuestas.forEach(ans => {
-                const block = document.createElement('div');
-                let blockClass = 'audit-q-block ';
-                let statusTag = '';
+            // Si el intento posee array detallado de respuestas
+            if (Array.isArray(record.respuestas) && record.respuestas.length > 0) {
+                record.respuestas.forEach(ans => {
+                    const block = document.createElement('div');
+                    let blockClass = 'audit-q-block ';
+                    let statusTag = '';
 
-                if (ans.markedIndex < 0) {
-                    blockClass += 'unanswered';
-                    statusTag = '<span class="audit-status-tag tag-unanswered">⚪ NO RESPONDIDA</span>';
-                } else if (ans.isCorrect) {
-                    blockClass += 'correct';
-                    statusTag = '<span class="audit-status-tag tag-correct">✓ CORRECTA</span>';
-                } else {
-                    blockClass += 'incorrect';
-                    statusTag = '<span class="audit-status-tag tag-incorrect">✗ INCORRECTA</span>';
+                    if (ans.markedIndex < 0 || ans.markedText === 'Sin responder') {
+                        blockClass += 'unanswered';
+                        statusTag = '<span class="audit-status-tag tag-unanswered">⚪ NO RESPONDIDA</span>';
+                    } else if (ans.isCorrect) {
+                        blockClass += 'correct';
+                        statusTag = '<span class="audit-status-tag tag-correct">✓ CORRECTA</span>';
+                    } else {
+                        blockClass += 'incorrect';
+                        statusTag = '<span class="audit-status-tag tag-incorrect">✗ INCORRECTA</span>';
+                    }
+
+                    block.className = blockClass;
+                    block.innerHTML = `
+                        ${statusTag}
+                        <div style="font-weight: 600; font-size: 0.95rem; margin-bottom: 0.5rem;">
+                            Pregunta ${ans.questionNumber}. ${ans.questionText || ''}
+                        </div>
+                        <div class="audit-answer-row audit-user-ans">
+                            <strong>Respuesta marcada por participante:</strong> ${ans.markedText || 'Sin responder'}
+                        </div>
+                        <div class="audit-answer-row audit-correct-ans">
+                            <strong>Respuesta correcta (Auditoría):</strong> ${ans.correctText || '--'}
+                        </div>
+                    `;
+                    qContainer.appendChild(block);
+                });
+            } else {
+                // Si proviene de formato plano P1..P20
+                for (let i = 1; i <= 20; i++) {
+                    const pKey = `P${i}`;
+                    const markedText = record[pKey] || (record.p_respuestas ? record.p_respuestas[pKey] : 'Sin responder');
+                    const block = document.createElement('div');
+                    block.className = 'audit-q-block';
+                    block.innerHTML = `
+                        <div style="font-weight: 600; font-size: 0.95rem; margin-bottom: 0.5rem;">
+                            Pregunta ${i}
+                        </div>
+                        <div class="audit-answer-row audit-user-ans">
+                            <strong>Respuesta marcada:</strong> ${markedText}
+                        </div>
+                    `;
+                    qContainer.appendChild(block);
                 }
-
-                block.className = blockClass;
-                block.innerHTML = `
-                    ${statusTag}
-                    <div style="font-weight: 600; font-size: 0.95rem; margin-bottom: 0.5rem;">
-                        Pregunta ${ans.questionNumber}. ${ans.questionText}
-                    </div>
-                    <div class="audit-answer-row audit-user-ans">
-                        <strong>Respuesta marcada por alumno:</strong> ${ans.markedText}
-                    </div>
-                    <div class="audit-answer-row audit-correct-ans">
-                        <strong>Respuesta correcta (Auditoría):</strong> ${ans.correctText}
-                    </div>
-                `;
-                qContainer.appendChild(block);
-            });
+            }
 
             document.getElementById('modal-audit').classList.add('active');
         };
 
         // ==========================================
-        // 13. EXPORTACIÓN A EXCEL (.XLSX)
+        // 13. EXPORTACIÓN A EXCEL (.XLSX & CSV) CON P1-P20
         // ==========================================
         function exportToExcel() {
-            const records = getStoredEvaluations();
-            if (records.length === 0) {
+            const records = cachedEvaluations.length > 0 ? cachedEvaluations : getLocalStoredEvaluations();
+            if (!records || records.length === 0) {
                 alert("No hay registros disponibles para exportar.");
                 return;
             }
 
-            const exportData = records.map(r => ({
-                'Nombre': r.nombres,
-                'Apellidos': r.apellidos,
-                'DNI': r.dni,
-                'Campaña': r.campana,
-                'Código Capacitación': r.codigo,
-                'Modular Rendido': r.evaluacion,
-                'Fecha Inicio': r.fechaInicio,
-                'Fecha Fin': r.fechaFin,
-                'Tiempo Utilizado': r.tiempoUtilizado,
-                'Puntaje': `${r.puntaje}/${r.total}`,
-                'Porcentaje': `${r.porcentaje}%`,
-                'Estado': r.aprobado ? 'APROBADO' : 'DESAPROBADO'
-            }));
+            // Construir filas completas con datos del alumno + métricas + 20 preguntas (P1 a P20)
+            const exportData = records.map(r => {
+                const row = {
+                    'Nombre': r.nombres || '',
+                    'Apellidos': r.apellidos || '',
+                    'DNI': r.dni || '',
+                    'Campaña': r.campana || '',
+                    'Código Capacitación': r.codigo || '',
+                    'Modular Rendido': r.evaluacion || '',
+                    'Fecha Inicio': r.fechaInicio || '',
+                    'Fecha Fin': r.fechaFin || '',
+                    'Tiempo Empleado': r.tiempoUtilizado || '',
+                    'Puntaje': (r.puntaje !== undefined ? `${r.puntaje}/${r.total || 20}` : (r.nota || '')),
+                    'Porcentaje': `${r.porcentaje !== undefined ? r.porcentaje : 0}%`,
+                    'Estado': r.aprobado ? 'APROBADO' : (r.estado || 'DESAPROBADO')
+                };
 
-            // Si SheetJS (XLSX) está disponible en la página
+                // Columnas P1 a P20 con la respuesta exacta seleccionada por el participante
+                for (let i = 1; i <= 20; i++) {
+                    const key = `P${i}`;
+                    let answerText = 'Sin responder';
+                    
+                    if (r[key] !== undefined && r[key] !== null && r[key] !== '') {
+                        answerText = r[key];
+                    } else if (r.p_respuestas && r.p_respuestas[key]) {
+                        answerText = r.p_respuestas[key];
+                    } else if (Array.isArray(r.respuestas) && r.respuestas[i - 1]) {
+                        answerText = r.respuestas[i - 1].markedText || 'Sin responder';
+                    }
+                    row[key] = answerText;
+                }
+
+                return row;
+            });
+
+            // Generación de Excel nativo (.xlsx) con SheetJS
             if (typeof XLSX !== 'undefined') {
                 try {
                     const ws = XLSX.utils.json_to_sheet(exportData);
                     const wb = XLSX.utils.book_new();
-                    XLSX.utils.book_append_sheet(wb, ws, "Evaluaciones");
+                    XLSX.utils.book_append_sheet(wb, ws, "Evaluaciones Modulares");
                     
-                    // Ajustar ancho de columnas
+                    // Configuración de anchos de columna
                     const colWidths = [
-                        { wch: 18 }, { wch: 20 }, { wch: 12 }, { wch: 14 },
-                        { wch: 20 }, { wch: 18 }, { wch: 22 }, { wch: 22 },
-                        { wch: 16 }, { wch: 10 }, { wch: 12 }, { wch: 14 }
+                        { wch: 18 }, // Nombre
+                        { wch: 20 }, // Apellidos
+                        { wch: 12 }, // DNI
+                        { wch: 14 }, // Campaña
+                        { wch: 20 }, // Código Capacitación
+                        { wch: 18 }, // Modular Rendido
+                        { wch: 22 }, // Fecha Inicio
+                        { wch: 22 }, // Fecha Fin
+                        { wch: 16 }, // Tiempo Empleado
+                        { wch: 10 }, // Puntaje
+                        { wch: 12 }, // Porcentaje
+                        { wch: 14 }  // Estado
                     ];
+
+                    // Anchos para columnas P1 hasta P20
+                    for (let i = 1; i <= 20; i++) {
+                        colWidths.push({ wch: 45 });
+                    }
                     ws['!cols'] = colWidths;
 
-                    const filename = `Evaluaciones_Peru_Fibra_${new Date().toISOString().slice(0,10)}.xlsx`;
+                    const nowStr = new Date().toISOString().slice(0, 10);
+                    const filename = `Reporte_Evaluaciones_Peru_Fibra_${nowStr}.xlsx`;
                     XLSX.writeFile(wb, filename);
-                    showToast("Archivo Excel .xlsx generado exitosamente.", "📥");
+                    showToast("Archivo Excel .xlsx generado con éxito con columnas P1 a P20.", "📥");
                     return;
                 } catch (e) {
-                    console.error("Error exporting with XLSX library, falling back to CSV:", e);
+                    console.error("Error al exportar con XLSX, usando fallback CSV:", e);
                 }
             }
 
-            // Fallback CSV si la librería no carga
+            // Fallback a CSV si la librería XLSX no está cargada
             exportToCSVFallback(exportData);
         }
 
@@ -3095,11 +3366,11 @@
             const url = URL.createObjectURL(blob);
             const link = document.createElement("a");
             link.setAttribute("href", url);
-            link.setAttribute("download", `Evaluaciones_Peru_Fibra_${new Date().toISOString().slice(0,10)}.csv`);
+            link.setAttribute("download", `Reporte_Evaluaciones_Peru_Fibra_${new Date().toISOString().slice(0, 10)}.csv`);
             document.body.appendChild(link);
             link.click();
             document.body.removeChild(link);
-            showToast("Archivo exportado correctamente.", "📥");
+            showToast("Archivo exportado correctamente (CSV).", "📥");
         }
     </script>
 </body>
