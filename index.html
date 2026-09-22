@@ -577,6 +577,11 @@
                                 <option value="18">18/20 (90%)</option>
                             </select>
                         </div>
+                            <div id="cloud-sync-status-badge" style="display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; padding: 5px 12px; border-radius: 20px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.14); color: var(--pf-gray-200); cursor: pointer; transition: all 0.2s ease;" onclick="openFirebaseConfigModal()" title="Configuración de Base de Datos en la Nube (Firebase)">
+                                <span id="cloud-sync-dot" style="width: 8px; height: 8px; border-radius: 50%; background: #10b981; display: inline-block;"></span>
+                                <span id="cloud-sync-text">Sincronización Activa</span>
+                                <span style="opacity: 0.65; font-size: 10px;">⚙️</span>
+                            </div>
                         <button class="btn-ghost" onclick="openValidateCertModal()" title="Validar Certificado Emitido">
                             <span>🔍 Validar Certificado</span>
                         </button>
@@ -2465,8 +2470,137 @@
             "Modular 4": { name: "Modular 4", desc: "Políticas Comerciales y Soporte Técnico", status: "active", version: "v1.0", questionLimit: 20, maxAttempts: 0, cooldownHours: 0 }
         };
 
-        const FIREBASE_ENDPOINT = 'https://perufibra-evaluaciones-default-rtdb.firebaseio.com/evaluaciones.json';
-        const FIREBASE_CONFIG_ENDPOINT = 'https://perufibra-evaluaciones-default-rtdb.firebaseio.com/modulares_config.json';
+        // =========================================================================
+        // CONFIGURACIÓN OFICIAL FIREBASE REALTIME DATABASE (PERUFIBRA-EVALUACIONES)
+        // =========================================================================
+        const firebaseConfig = {
+            apiKey: "AIzaSyBXuEteU3vvsWQb3S40sMZg06olLZAuqBs",
+            authDomain: "perufibra-evaluaciones.firebaseapp.com",
+            databaseURL: "https://perufibra-evaluaciones-default-rtdb.firebaseio.com",
+            projectId: "perufibra-evaluaciones",
+            storageBucket: "perufibra-evaluaciones.firebasestorage.app",
+            messagingSenderId: "305455895166",
+            appId: "1:305455895166:web:7e3f79ad4c8dbbd26a7e2f",
+            measurementId: "G-2LVMB6DMLV"
+        };
+
+        const FIREBASE_DB_STORAGE_KEY = 'PF_FIREBASE_RTDB_URL';
+        const DEFAULT_FIREBASE_BASE = "https://perufibra-evaluaciones-default-rtdb.firebaseio.com";
+
+        function getFirebaseBaseUrl() {
+            try {
+                const stored = localStorage.getItem(FIREBASE_DB_STORAGE_KEY);
+                if (stored && stored.trim()) {
+                    return stored.trim().replace(/\/+$/, '');
+                }
+            } catch(e) {}
+            return DEFAULT_FIREBASE_BASE;
+        }
+
+        function setFirebaseBaseUrl(url) {
+            try {
+                if (!url || !url.trim()) {
+                    localStorage.removeItem(FIREBASE_DB_STORAGE_KEY);
+                } else {
+                    localStorage.setItem(FIREBASE_DB_STORAGE_KEY, url.trim().replace(/\/+$/, ''));
+                }
+            } catch(e) {}
+        }
+
+        function getFirebaseEndpoint(node) {
+            const base = getFirebaseBaseUrl();
+            if (!base) return null;
+            return `${base}/${node}.json`;
+        }
+
+        function updateCloudSyncBadge(status, text) {
+            const dot = document.getElementById('cloud-sync-dot');
+            const txt = document.getElementById('cloud-sync-text');
+            if (!dot || !txt) return;
+            if (status === 'online') {
+                dot.style.background = '#10b981';
+                txt.textContent = text || 'Nube Conectada';
+            } else if (status === 'offline') {
+                dot.style.background = '#f59e0b';
+                txt.textContent = text || 'Almacenamiento Local (Offline)';
+            } else if (status === 'error') {
+                dot.style.background = '#ef4444';
+                txt.textContent = text || 'Error de Sincronización';
+            } else {
+                dot.style.background = '#3b82f6';
+                txt.textContent = text || 'Sincronizando...';
+            }
+        }
+
+        function openFirebaseConfigModal() {
+            const input = document.getElementById('input-firebase-url');
+            if (input) input.value = getFirebaseBaseUrl();
+            const statusDiv = document.getElementById('firebase-test-status');
+            if (statusDiv) statusDiv.style.display = 'none';
+            document.getElementById('modal-firebase-config').classList.add('active');
+        }
+
+        function closeFirebaseConfigModal() {
+            document.getElementById('modal-firebase-config').classList.remove('active');
+        }
+
+        async function testFirebaseConnection() {
+            const input = document.getElementById('input-firebase-url');
+            const statusDiv = document.getElementById('firebase-test-status');
+            const rawUrl = (input ? input.value : '').trim().replace(/\/+$/, '');
+            if (!rawUrl) {
+                statusDiv.style.display = 'block';
+                statusDiv.style.background = 'rgba(239, 68, 68, 0.15)';
+                statusDiv.style.border = '1px solid rgba(239, 68, 68, 0.4)';
+                statusDiv.style.color = '#fca5a5';
+                statusDiv.innerHTML = '❌ Por favor ingrese una URL válida de Firebase Realtime Database.';
+                return;
+            }
+            statusDiv.style.display = 'block';
+            statusDiv.style.background = 'rgba(59, 130, 246, 0.15)';
+            statusDiv.style.border = '1px solid rgba(59, 130, 246, 0.4)';
+            statusDiv.style.color = '#93c5fd';
+            statusDiv.innerHTML = '⏳ Probando conexión con la base de datos...';
+
+            try {
+                const pingUrl = `${rawUrl}/evaluaciones.json?shallow=true`;
+                const resp = await fetch(pingUrl, { method: 'GET', headers: { 'Accept': 'application/json' }, cache: 'no-store' });
+                if (resp.ok) {
+                    statusDiv.style.background = 'rgba(16, 185, 129, 0.15)';
+                    statusDiv.style.border = '1px solid rgba(16, 185, 129, 0.4)';
+                    statusDiv.style.color = '#6ee7b7';
+                    statusDiv.innerHTML = '✅ <strong>Conexión exitosa.</strong> Firebase Realtime Database responde correctamente (HTTP ' + resp.status + ').';
+                } else if (resp.status === 404) {
+                    statusDiv.style.background = 'rgba(245, 158, 11, 0.15)';
+                    statusDiv.style.border = '1px solid rgba(245, 158, 11, 0.4)';
+                    statusDiv.style.color = '#fcd34d';
+                    statusDiv.innerHTML = '⚠️ <strong>Respuesta HTTP 404 (Not Found):</strong> La instancia de Firebase indicada no existe o no ha sido creada aún en la consola de Firebase. Los datos se continuarán guardando de forma segura en almacenamiento local (localStorage).';
+                } else {
+                    statusDiv.style.background = 'rgba(239, 68, 68, 0.15)';
+                    statusDiv.style.border = '1px solid rgba(239, 68, 68, 0.4)';
+                    statusDiv.style.color = '#fca5a5';
+                    statusDiv.innerHTML = `⚠️ Código de respuesta: HTTP ${resp.status} - Verifique las reglas de seguridad o URL en Firebase Console.`;
+                }
+            } catch (err) {
+                statusDiv.style.background = 'rgba(239, 68, 68, 0.15)';
+                statusDiv.style.border = '1px solid rgba(239, 68, 68, 0.4)';
+                statusDiv.style.color = '#fca5a5';
+                statusDiv.innerHTML = `❌ Error de red / CORS: ${err.message}. Verifique que la URL comience con https:// y pertenezca a Firebase.`;
+            }
+        }
+
+        async function saveFirebaseConfig() {
+            const input = document.getElementById('input-firebase-url');
+            const rawUrl = (input ? input.value : '').trim().replace(/\/+$/, '');
+            setFirebaseBaseUrl(rawUrl);
+            showToast('URL de Firebase actualizada correctamente', '☁️');
+            closeFirebaseConfigModal();
+            await fetchAllEvaluationsCentralized();
+            await syncConfigFromFirebase();
+            const records = cachedEvaluations.length > 0 ? cachedEvaluations : getLocalStoredEvaluations();
+            calculateAndRenderKPIs(records);
+            renderAdminTable(records);
+        }
         const ADMIN_PASSWORDS = ['Jl30n1.P3ruF1br4.2027', 'Jl30n1.P3ruF1br3.2027'];
 
         let currentStudent = null;
@@ -2634,6 +2768,9 @@
         }
 
         async function syncConfigToFirebase() {
+            const configEndpoint = getFirebaseEndpoint('modulares_config');
+            const modularesEndpoint = getFirebaseEndpoint('modulares');
+            if (!configEndpoint) return;
             try {
                 const payload = {
                     meta: getModulesMeta(),
@@ -2643,27 +2780,44 @@
                     passingThreshold: getPassingScoreThreshold(),
                     updatedAt: new Date().toISOString()
                 };
-                await fetch(FIREBASE_CONFIG_ENDPOINT, {
+                // Sincronizar en /modulares_config
+                await fetch(configEndpoint, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload)
                 });
-            } catch (e) {}
+                // Sincronizar estructura de modulares en /modulares
+                if (modularesEndpoint) {
+                    await fetch(modularesEndpoint, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload.meta)
+                    });
+                }
+            } catch (e) {
+                console.warn('Sync config offline/error:', e.message);
+            }
         }
 
         async function syncConfigFromFirebase() {
+            const configEndpoint = getFirebaseEndpoint('modulares_config');
+            if (!configEndpoint) return;
             try {
-                const resp = await fetch(FIREBASE_CONFIG_ENDPOINT);
+                const resp = await fetch(configEndpoint, { cache: 'no-store' });
                 if (resp.ok) {
                     const data = await resp.json();
-                    if (data && data.meta) localStorage.setItem(MODULES_META_STORAGE_KEY, JSON.stringify(data.meta));
-                    if (data && data.customBank) localStorage.setItem(BANK_STORAGE_KEY, JSON.stringify(data.customBank));
-                    if (data && data.categories) localStorage.setItem(CATEGORIES_KEY, JSON.stringify(data.categories));
-                    if (data && data.passingThreshold) setPassingScoreThreshold(data.passingThreshold);
-                    renderParticipantEvaluationSelect();
-                    populateCategoryDropdowns();
+                    if (data) {
+                        if (data.meta) localStorage.setItem(MODULES_META_STORAGE_KEY, JSON.stringify(data.meta));
+                        if (data.customBank) localStorage.setItem(BANK_STORAGE_KEY, JSON.stringify(data.customBank));
+                        if (data.categories) localStorage.setItem(CATEGORIES_KEY, JSON.stringify(data.categories));
+                        if (data.passingThreshold) setPassingScoreThreshold(data.passingThreshold);
+                        renderParticipantEvaluationSelect();
+                        populateCategoryDropdowns();
+                    }
                 }
-            } catch (e) {}
+            } catch (e) {
+                console.warn('Fetch config from Firebase:', e.message);
+            }
         }
 
         // --- NOTA MÍNIMA APROBATORIA ---
@@ -2716,44 +2870,147 @@
         async function fetchAllEvaluationsCentralized() {
             let cloudRecords = [];
             let isCloudSuccess = false;
-            try {
-                const response = await fetch(FIREBASE_ENDPOINT, { cache: 'no-store' });
-                if (response.ok) {
-                    const data = await response.json();
-                    if (data) {
-                        cloudRecords = Object.keys(data).map(key => ({
-                            _firebaseKey: key,
-                            ...data[key]
-                        }));
-                        isCloudSuccess = true;
-                    }
-                }
-            } catch (err) {}
+            const endpoint = getFirebaseEndpoint('evaluaciones');
 
-            const localRecords = getLocalStoredEvaluations();
+            if (endpoint) {
+                try {
+                    const response = await fetch(endpoint, { cache: 'no-store' });
+                    if (response.ok) {
+                        const data = await response.json();
+                        if (data) {
+                            if (Array.isArray(data)) {
+                                cloudRecords = data.filter(Boolean);
+                            } else if (typeof data === 'object') {
+                                cloudRecords = Object.keys(data).map(key => ({
+                                    _firebaseKey: key,
+                                    ...data[key]
+                                }));
+                            }
+                            isCloudSuccess = true;
+                        }
+                        updateCloudSyncBadge('online', '🟢 Firebase Nube Activa');
+                    } else {
+                        updateCloudSyncBadge('offline', `Modo Local (HTTP ${response.status})`);
+                    }
+                } catch (err) {
+                    updateCloudSyncBadge('offline', 'Almacenamiento Local (Offline)');
+                }
+            } else {
+                updateCloudSyncBadge('offline', 'Almacenamiento Local');
+            }
+
+            // Si se conectó a Firebase, la nube es la fuente principal de verdad
             const recordMap = new Map();
-            localRecords.forEach(r => { if (r && r.id) recordMap.set(r.id, r); });
-            cloudRecords.forEach(r => { if (r && r.id) recordMap.set(r.id, r); });
+
+            if (isCloudSuccess) {
+                // Firebase es la fuente primaria
+                cloudRecords.forEach(r => { if (r && (r.id || r._firebaseKey)) recordMap.set(r.id || r._firebaseKey, r); });
+                // Respaldo local si existía alguno no sincronizado
+                const localRecords = getLocalStoredEvaluations();
+                localRecords.forEach(r => {
+                    if (r && r.id && !recordMap.has(r.id)) {
+                        recordMap.set(r.id, r);
+                    }
+                });
+            } else {
+                const localRecords = getLocalStoredEvaluations();
+                localRecords.forEach(r => { if (r && r.id) recordMap.set(r.id, r); });
+            }
 
             const unifiedList = Array.from(recordMap.values());
             unifiedList.sort((a, b) => new Date(b.fechaInicioRaw || b.fechaInicio || 0) - new Date(a.fechaInicioRaw || a.fechaInicio || 0));
 
             setLocalStoredEvaluations(unifiedList);
+            cachedEvaluations = unifiedList;
             return { records: unifiedList, fromCloud: isCloudSuccess, totalCount: unifiedList.length };
         }
 
         async function saveEvaluationRecord(record) {
+            // 1. Guardar de inmediato en localStorage (respaldo offline y caché inmediata)
             const currentList = getLocalStoredEvaluations();
-            currentList.unshift(record);
+            const existingIdx = currentList.findIndex(r => r.id === record.id);
+            if (existingIdx >= 0) {
+                currentList[existingIdx] = record;
+            } else {
+                currentList.unshift(record);
+            }
             setLocalStoredEvaluations(currentList);
+            cachedEvaluations = currentList;
 
-            try {
-                await fetch(FIREBASE_ENDPOINT, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(record)
-                });
-            } catch (err) {}
+            // 2. Guardar en Firebase Realtime Database: /evaluaciones
+            const endpoint = getFirebaseEndpoint('evaluaciones');
+            let firebaseKey = null;
+
+            if (endpoint) {
+                try {
+                    const resp = await fetch(endpoint, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(record)
+                    });
+                    if (resp.ok) {
+                        const resData = await resp.json();
+                        firebaseKey = resData && resData.name ? resData.name : null;
+                        if (firebaseKey) {
+                            record._firebaseKey = firebaseKey;
+                        }
+                        updateCloudSyncBadge('online', '🟢 Firebase Sincronizado');
+                    }
+                } catch (err) {
+                    console.warn('Error guardando en /evaluaciones:', err.message);
+                }
+            }
+
+            // 3. Guardar en Firebase Realtime Database: /historial (por DNI)
+            if (record.dni) {
+                const historialEndpoint = getFirebaseEndpoint(`historial/${encodeURIComponent(record.dni)}/${record.id || 'eval_' + Date.now()}`);
+                if (historialEndpoint) {
+                    try {
+                        await fetch(historialEndpoint, {
+                            method: 'PUT',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                id: record.id,
+                                evaluacion: record.evaluacion,
+                                score: record.score,
+                                total: record.total,
+                                porcentaje: record.porcentaje,
+                                estado: record.estado,
+                                fechaInicio: record.fechaInicio,
+                                fechaFin: record.fechaFin,
+                                duracionMinutos: record.duracionMinutos,
+                                _firebaseKey: firebaseKey
+                            })
+                        });
+                    } catch (e) {}
+                }
+            }
+
+            // 4. Si aprobó, registrar el certificado oficial en /certificados para validación pública global
+            if (record.estado === 'Aprobado') {
+                const certCode = `PF-${record.evaluacion.replace(/\s+/g, '')}-${record.dni}-${(record.id || '').slice(-6)}`;
+                const certEndpoint = getFirebaseEndpoint(`certificados/${encodeURIComponent(certCode)}`);
+                if (certEndpoint) {
+                    try {
+                        await fetch(certEndpoint, {
+                            method: 'PUT',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                codigoCertificado: certCode,
+                                evaluacionId: record.id,
+                                dni: record.dni,
+                                nombre: record.nombre,
+                                evaluacion: record.evaluacion,
+                                score: record.score,
+                                porcentaje: record.porcentaje,
+                                estado: record.estado,
+                                fechaEmision: record.fechaFin || new Date().toLocaleString('es-PE'),
+                                _firebaseKey: firebaseKey
+                            })
+                        });
+                    } catch(e) {}
+                }
+            }
         }
 
         // --- UI & NAVEGACIÓN ---
